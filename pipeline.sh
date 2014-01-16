@@ -6,7 +6,16 @@
 # DEFINE FUNCTIONS
 
 # print_usage()
-function print_usage { echo -e "\nUsage:\t$0\n\t\t[-r <genome_reference_file> (FASTA)>]\n\t\t[-g <genome_feature_file (GTF/GFF)>]\n\t\t[-m <mirbase_file (FASTA)>]\n\t\t[-o <output_directory>]\n\t\t[-n <cores>]\n\t\t[-f (overwrite existing files)]\n\t\t[-k (keep temp files)]\n\t\t<sequence_file> [<additional_sequence_files> <will_be_merged> <before_processing>]\n" >&2 ; }
+function print_usage { echo -e  "\nUsage:\t$0\n" \
+                                "\t\t[-r <genome_reference_file> (FASTA)>]\n" \
+                                "\t\t[-g <genome_feature_file (GTF/GFF)>]\n" \
+                                "\t\t[-m <mirbase_file (FASTA)>]\n" \
+                                "\t\t[-o <output_directory>]\n" \
+                                "\t\t[-n <cores>]\n" \
+                                "\t\t[-f (overwrite existing files)]\n" \
+                                "\t\t[-k (keep temp files)]\n" \
+                                "\t\t<sequence_file> [<additional_sequence_files> <will_be_merged> <before_processing>]\n" >&2 ;
+                     }
 
 # extension_is_fastq()
 NOT_FASTQ_ERROR_TEXT="input file is not in fastq format (doesn't end with .fastq or .fq)"
@@ -148,8 +157,8 @@ done
 
 
 # CONSTANTS
-DATETIME=$(date "+%Y%m%d_%X")
-SYS_CORES=$(nproc)
+DATETIME=$(date "+%Y%m%d_%H%M%S")
+[[ $SLURM_CPUS_ON_NODE ]] && SYS_CORES=$SLURM_CPUS_ON_NODE || SYS_CORES=$(nproc --all)
 
 # CHECK FOR PRESENCE OF POSITIONAL ARGUMENTS (further checks later)
 if [[ $OPTIND > ${#@} ]]; then
@@ -180,13 +189,14 @@ fi
 
 # VERIFY TMP DIRECTORY IF PASSED OR USE DEFAULT SYSTEM TMP
 if [[ $TMP_DIR ]]; then
-    NEW_TMP_DIR=$(mktemp -d $(readlink -m $TMP_DIR)"/tmp.XXX")
+    NEW_TMP_DIR=$(mkdir $(readlink -m $TMP_DIR)"/tmp/")
     if [[ !$NEW_TMP_DIR ]]; then
         echo -e "WARNING:\tUnable to create temporary directory in user-supplied directory $TMP_DIR; falling back to output directory \"$OUTPUT_DIR\"" 1>&2
     else
         TMP_DIR=$NEW_TMP_DIR
     fi
 else
+    # Try using environment variables to locate system tmp
     if [[ $TMPDIR ]]; then
         TMP_DIR=$(mktemp -d $TMPDIR"/tmp.XXX")
     elif [[ $SNIC_TMP ]]; then
@@ -197,16 +207,14 @@ else
 fi
 # this is kind of like a 'finally' clause in case all the other attempts fail
 if [[ ! $TMP_DIR ]]; then
-    mkdir -p $OUTPUT_DIR"/tmp"
-    TMP_DIR=$(mktemp -d $OUTPUT_DIR"/tmp/tmp.XXX")
+    TMP_DIR=$OUTPUT_DIR"/tmp/"
+    mkdir -p $TMP_DIR
     if [[ ! $TMP_DIR ]]; then
-        echo -e "FATAL:\t\tUnable to create temporary working directory. Please specify on the command line with the -t flag." 1>&2
+        echo -e "FATAL:\t\tUnable to create temporary working directory \"$TMP_DIR\" -- please specify on the command line with the -t flag." 1>&2
         exit
     fi
 fi
 
-# HACK nproc isn't working for some reason on the cluster -- hack it
-SYS_CORES=16
 # DETERMINE THE NUMBER OF CORES TO USE
 if [[ ! $NUM_CORES ]]; then
     echo -e "INFO:\t\tNumber of cores not specified; setting to 1." 1>&2
@@ -229,7 +237,7 @@ fi
 LOG_DIR=$OUTPUT_DIR"/logs/"
 SEQDATA_DIR=$TMP_DIR"/seqdata/"
 FASTQC_DIR=$OUTPUT_DIR"/fastqc/"
-( [[ $GENOME_REF ]] || [[ $MIRBASE_FILE ]] ) && ALIGNED_DIR=$TMP_DIR"/aligned/"
+( [[ $GENOME_REF ]] || [[ $MIRBASE_FILE ]] ) && ALIGNED_DIR=$OUTPUT_DIR"/aligned/"
 [[ $FEATURES_FILE ]] && ANNOTATED_DIR=$OUTPUT_DIR"/annotated/"
 VIS_DIR=$OUTPUT_DIR"/visualization/"
 for dir in $LOG_DIR $SEQDATA_DIR $ALIGNED_DIR $VIS_DIR $ANNOTATED_DIR; do
@@ -242,7 +250,7 @@ done
 
 # CREATE TEMPORARY LOG FILE
 # must create temporary log file until we get the definitive name of the input file
-TMP_LOG_FILE=$(mktemp $LOG_DIR/"run_"$DATETIME"-XXX.prelog")
+TMP_LOG_FILE=$(mktemp $LOG_DIR"run_"$DATETIME"-XXX.prelog")
 START_TIME=$(date +%s)
 echo -e "Beginning script execution at $(date)." > $TMP_LOG_FILE
 echo -e "Script invoked as: $0 $@\n" >> $TMP_LOG_FILE
@@ -466,10 +474,8 @@ if [[ $FEATURES_FILE ]]; then
                     # remove empty file on failed conversion but leave SAM file
                     rm $ANNOTATED_FILE_BAM
                 else
-                    # if we produce a new (annotated) bam file, delete the sam file
-                    rm $ANNOTATED_FILE_SAM
-                    # and move the original (unannotated) bam file into the tmp directory
-                    mv $ALIGNED_DIR $TMP_DIR"/aligned/"
+                    # if we produce a new (annotated) bam file, delete the sam file and the original alignment file
+                    rm $ANNOTATED_FILE_SAM $OUTFILE_ALN
                 fi
             fi
         else
@@ -521,8 +527,10 @@ fi
 # Remove tmp directory
 if [[ $KEEP_TMPFILES ]]; then
     echo -e "\nINFO:\t\tKeeping temp files: moving to \"$OUTPUT_DIR/tmp\"..." | tee -a $LOG_FILE 1>&2
-    mkdir -p $OUTPUT_DIR/tmp/
-    mv -v $TMP_DIR $OUTPUT_DIR/tmp/ 2>&1 | tee -a $LOG_FILE 1>&2
+    if [[ ! "$OUTPUT_DIR/tmp" -eq $TMP_DIR ]]; then
+        mkdir -p $OUTPUT_DIR/tmp/
+        mv -v $TMP_DIR $OUTPUT_DIR/tmp/ 2>&1 | tee -a $LOG_FILE 1>&2
+    fi
 else
     echo -e "\nINFO:\t\tRemoving tmp files." | tee -a $LOG_FILE 1>&2
     rm -rf $TMP_DIR
